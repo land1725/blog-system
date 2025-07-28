@@ -3,7 +3,6 @@ package controllers
 import (
 	"blog-system/database"
 	"blog-system/models"
-	"fmt"
 	"github.com/gin-gonic/gin"
 	"log"
 	"net/http"
@@ -22,14 +21,24 @@ func CreatePost(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	post.Title = data["title"].(string)
-	post.Content = data["content"].(string)
-	//err := c.ShouldBindJSON(&post)
-	//if err != nil {
-	//	log.Fatal(err)
-	//}
+
+	// 标题类型断言和错误处理
+	if title, ok := data["title"].(string); ok {
+		post.Title = title
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "title must be a string"})
+		return
+	}
+
+	// 内容类型断言和错误处理
+	if content, ok := data["content"].(string); ok {
+		post.Content = content
+	} else {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "content must be a string"})
+		return
+	}
+
 	// 从上下文中获取用户ID
-	// 设置文章作者
 	if userIdValue, exists := c.Get("userid"); exists {
 		// 类型安全转换
 		if userId, ok := userIdValue.(uint); ok {
@@ -41,20 +50,28 @@ func CreatePost(c *gin.Context) {
 			return
 		}
 	}
-	// 创建文章
-	err := database.DB.Create(&post).Error
-	if err != nil {
-		c.JSON(http.StatusInternalServerError, gin.H{"error": err.Error()})
+
+	// 创建文章 - 添加错误处理
+	if err := database.DB.Create(&post).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "创建文章失败: " + err.Error()})
+		return
 	}
+
 	c.JSON(http.StatusCreated, post)
 }
 
 // GetPosts 获取所有文章列表
 // 参数: c - Gin上下文
 func GetPosts(c *gin.Context) {
-	// 查询所有文章（带分页）
+	// 查询所有文章
 	var posts []models.Post
-	database.DB.Find(&posts)
+
+	// 添加数据库查询错误处理
+	if err := database.DB.Find(&posts).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取文章列表失败"})
+		return
+	}
+
 	c.JSON(http.StatusOK, posts)
 }
 
@@ -66,12 +83,16 @@ func GetPost(c *gin.Context) {
 	param := c.Param("id")
 	id, err := strconv.Atoi(param)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	} else {
-		fmt.Println(id)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文章ID"})
+		return
 	}
-	database.DB.Where("id = ?", id).Find(&post)
-	// 查询文章
+
+	// 查询文章 - 添加错误处理
+	if err := database.DB.Where("id = ?", id).First(&post).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在"})
+		return
+	}
+
 	c.JSON(http.StatusOK, post)
 }
 
@@ -82,11 +103,10 @@ func UpdatePost(c *gin.Context) {
 	param := c.Param("id")
 	id, err := strconv.Atoi(param)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	} else {
-		fmt.Println(id)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文章ID"})
+		return
 	}
-	//var updatedPost models.Post
+
 	var data map[string]interface{} // 定义一个 map 接收 JSON 数据
 
 	// 绑定 JSON 数据到 map
@@ -94,13 +114,51 @@ func UpdatePost(c *gin.Context) {
 		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
 		return
 	}
-	// 更新文章
-	database.DB.Model(&models.Post{}).Where("id = ?", id).Updates(map[string]interface{}{
-		"title":   data["title"].(string),
-		"content": data["content"].(string),
-	})
+
+	// 准备更新数据
+	updateData := make(map[string]interface{})
+
+	// 标题类型断言和错误处理
+	if title, ok := data["title"].(string); ok {
+		updateData["title"] = title
+	} else if data["title"] != nil { // 如果提供了title但不是字符串
+		c.JSON(http.StatusBadRequest, gin.H{"error": "title must be a string"})
+		return
+	}
+
+	// 内容类型断言和错误处理
+	if content, ok := data["content"].(string); ok {
+		updateData["content"] = content
+	} else if data["content"] != nil { // 如果提供了content但不是字符串
+		c.JSON(http.StatusBadRequest, gin.H{"error": "content must be a string"})
+		return
+	}
+
+	// 如果没有提供任何有效更新字段
+	if len(updateData) == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "没有提供有效的更新字段"})
+		return
+	}
+
+	// 更新文章 - 添加错误处理
+	result := database.DB.Model(&models.Post{}).Where("id = ?", id).Updates(updateData)
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "更新文章失败"})
+		return
+	}
+
+	// 检查是否成功更新了记录
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在或没有变化"})
+		return
+	}
+
 	var updatedPost models.Post
-	database.DB.First(&updatedPost, id)
+	if err := database.DB.First(&updatedPost, id).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "获取更新后的文章失败"})
+		return
+	}
+
 	c.JSON(http.StatusOK, updatedPost)
 }
 
@@ -111,11 +169,22 @@ func DeletePost(c *gin.Context) {
 	param := c.Param("id")
 	id, err := strconv.Atoi(param)
 	if err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": err.Error()})
-	} else {
-		fmt.Println(id)
+		c.JSON(http.StatusBadRequest, gin.H{"error": "无效的文章ID"})
+		return
 	}
-	// 删除文章
-	database.DB.Where("id = ?", id).Delete(&models.Post{})
+
+	// 删除文章 - 添加错误处理
+	result := database.DB.Where("id = ?", id).Delete(&models.Post{})
+	if result.Error != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "删除文章失败"})
+		return
+	}
+
+	// 检查是否成功删除了记录
+	if result.RowsAffected == 0 {
+		c.JSON(http.StatusNotFound, gin.H{"error": "文章不存在"})
+		return
+	}
+
 	c.JSON(http.StatusOK, gin.H{"message": "文章删除成功"})
 }

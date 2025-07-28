@@ -6,6 +6,7 @@ import (
 	"blog-system/models"
 	"blog-system/utils"
 	"github.com/gin-gonic/gin"
+	"gorm.io/gorm"
 	"net/http"
 	"strconv"
 	"strings"
@@ -20,9 +21,9 @@ func AuthMiddleware() gin.HandlerFunc {
 		// 这里的具体实现方式要依据你的实际业务情况决定
 		authHeader := c.Request.Header.Get("Authorization")
 		if authHeader == "" {
-			c.JSON(http.StatusOK, gin.H{
+			c.JSON(http.StatusUnauthorized, gin.H{ // 改为401状态码
 				"code": 2003,
-				"msg":  "请求头中auth为空",
+				"msg":  "Authorization header is required",
 			})
 			c.Abort()
 			return
@@ -30,25 +31,55 @@ func AuthMiddleware() gin.HandlerFunc {
 		// 按空格分割
 		parts := strings.SplitN(authHeader, " ", 2)
 		if !(len(parts) == 2 && parts[0] == "Bearer") {
-			c.JSON(http.StatusOK, gin.H{
+			c.JSON(http.StatusBadRequest, gin.H{ // 改为400状态码
 				"code": 2004,
-				"msg":  "请求头中auth格式有误",
+				"msg":  "Invalid Authorization header format",
 			})
 			c.Abort()
 			return
 		}
-		// parts[1]是获取到的tokenString，我们使用之前定义好的解析JWT的函数来解析它
+
+		tokenString := parts[1]
+		if tokenString == "" {
+			c.JSON(http.StatusBadRequest, gin.H{ // 改为400状态码
+				"code": 2004,
+				"msg":  "Token string is empty",
+			})
+			c.Abort()
+			return
+		}
+
 		cfg := config.LoadConfig()
-		jwt := cfg.JWTSecret
-		mc, err := utils.ParseToken(parts[1], jwt)
-		if err != nil {
-			c.JSON(http.StatusOK, gin.H{
-				"code": 2005,
-				"msg":  "无效的Token",
+		if cfg.JWTSecret == "" {
+			c.JSON(http.StatusInternalServerError, gin.H{ // 添加500状态码
+				"code": 5000,
+				"msg":  "Server configuration error",
 			})
 			c.Abort()
 			return
 		}
+
+		// 解析JWT令牌
+		mc, err := utils.ParseToken(tokenString, cfg.JWTSecret)
+		if err != nil {
+			c.JSON(http.StatusUnauthorized, gin.H{ // 改为401状态码
+				"code": 2005,
+				"msg":  "Invalid or expired token",
+			})
+			c.Abort()
+			return
+		}
+
+		// 验证用户ID有效性
+		if mc.UserID == 0 {
+			c.JSON(http.StatusUnauthorized, gin.H{ // 改为401状态码
+				"code": 2006,
+				"msg":  "Invalid user in token",
+			})
+			c.Abort()
+			return
+		}
+
 		// 将当前请求的username信息保存到请求的上下文c上
 		c.Set("username", mc.Username)
 		c.Set("userid", mc.UserID)
@@ -62,10 +93,10 @@ func AuthorizePostOwner() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		// 1. 从URL参数获取文章ID
 		param := c.Param("id")
-		id, err := strconv.Atoi(param)
-		if err != nil {
+		id, err := strconv.ParseUint(param, 10, 32) // 更安全的转换方式
+		if err != nil || id == 0 {
 			c.JSON(http.StatusBadRequest, gin.H{"error": "Invalid post ID"})
-			c.Abort() // 终止后续处理
+			c.Abort()
 			return
 		}
 
@@ -79,8 +110,8 @@ func AuthorizePostOwner() gin.HandlerFunc {
 
 		// 3. 类型断言确保userid是uint类型
 		userId, ok := userIdValue.(uint)
-		if !ok {
-			c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user ID type"})
+		if !ok || userId == 0 {
+			c.JSON(http.StatusInternalServerError, gin.H{"error": "Invalid user ID"})
 			c.Abort()
 			return
 		}
@@ -88,7 +119,12 @@ func AuthorizePostOwner() gin.HandlerFunc {
 		// 4. 查询数据库验证文章所有者
 		var post models.Post
 		if err := database.DB.First(&post, id).Error; err != nil {
-			c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
+			// 更精确的错误处理
+			if err == gorm.ErrRecordNotFound {
+				c.JSON(http.StatusNotFound, gin.H{"error": "Post not found"})
+			} else {
+				c.JSON(http.StatusInternalServerError, gin.H{"error": "Database error"})
+			}
 			c.Abort()
 			return
 		}
